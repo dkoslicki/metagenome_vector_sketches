@@ -8,9 +8,14 @@ import time
 import shutil
 import matplotlib.pyplot as plt
 import random
+import sys
+import tempfile
+import subprocess
+
+__version__ = "1.0.0"
+__date__ = "26/09/2025"
 
 def index_vectors(output_dir):
-    identifiers = []
     vectors = []
 
     # Ensure output_dir exists and contains only vectors.txt
@@ -18,33 +23,25 @@ def index_vectors(output_dir):
         os.makedirs(output_dir)
     else:
         files = os.listdir(output_dir)
-        allowed = {"vectors.txt"}
+        allowed = {"vectors.bin", "vector_norms.txt"}
         for f in files:
             if f not in allowed:
                 os.remove(os.path.join(output_dir, f))
     
     output_index = os.path.join(output_dir, "faiss.index")
-    input_file = os.path.join(output_dir, "vectors.txt")
-    output_pos = os.path.join(output_dir, "positions.bin")
+    input_bin_vectors = os.path.join(output_dir, "vectors.bin")
+    input_vector_names = os.path.join(output_dir, "vector_norms.txt")
+    f = open(input_vector_names)
+    dimension = int(f.readline().strip())
+    f.close()
 
-    with open(input_file, "r") as f, open(output_pos, "wb") as pos_f:
+    with open(input_bin_vectors, "rb") as f:
         while True:
-            pos = f.tell()
-            line = f.readline()
-            if not line:
+            bytes_read = f.read(4 * dimension)
+            if not bytes_read or len(bytes_read) < 4 * dimension:
                 break
-            line = line.strip()
-            if not line:
-                continue
-            parts = line.split(":")
-            if len(parts) != 2:
-                continue
-            identifier = parts[0].strip()
-            vec_str = parts[1].strip()
-            vec = np.fromstring(vec_str, sep=" ")
-            identifiers.append(identifier)
+            vec = np.frombuffer(bytes_read, dtype=np.int32)
             vectors.append(vec)
-            pos_f.write(pos.to_bytes(8, byteorder="little"))
 
     vectors = np.stack(vectors).astype("float32")
     dim = vectors.shape[1]
@@ -54,19 +51,65 @@ def index_vectors(output_dir):
     index = faiss.IndexFlatIP(dim)  # Use inner product metric
     index.add(vectors)
     faiss.write_index(index, output_index)
-    print(f"Indexed {len(identifiers)} vectors of dimension {dim} into {output_index}.")
+    print(f"Indexed {len(vectors)} vectors of dimension {dim} into {output_index}.")
 
-def search_index(index_folder, query_file, j):
-    index = faiss.read_index(index_folder+"faiss.index")
+def search_index(index_folder, query_file, path_exec, j):
+
+    vectors_name_file = os.path.join(index_folder, "vector_norms.txt")
+    with open(vectors_name_file, "r") as f:
+        dimension = int(f.readline().strip())
+
+    # Convert each query (hash list) into a random projected vector
     queries = []
-
     with open(query_file, "r") as f:
+
+        # Prepare all queries for batch projection
+        hash_lines = []
+        sample_names = []
         for line in f:
             line = line.strip()
             if not line:
                 continue
-            vec = np.fromstring(line.split(":")[1], sep=" ")
-            queries.append(vec)
+            parts = line.split(":")
+            if len(parts) != 2:
+                print("ERROR 332: ", query_file, " ", line[:20], " ", len(parts))
+                sys.exit(332)
+            sample_name = parts[0].strip()
+            hash_list = parts[1].strip().split()
+            hash_lines.append(" ".join(hash_list))
+            sample_names.append(sample_name)
+
+        # Write all queries to a temporary file
+        with open(path_exec+"/tmp.hashes", mode="w") as tmp_hash_file:
+            for hash_line in hash_lines:
+                tmp_hash_file.write(f"{hash_line}\n")
+            tmp_hash_file_path = tmp_hash_file.name
+
+        # Call ./standalone_projection <tmp_file> <nb_dim>
+        # print("running ", path_exec + "/standalone_projection", tmp_hash_file_path, str(dimension))
+        result = subprocess.run(
+            [path_exec + "/standalone_projection", tmp_hash_file_path, str(dimension)],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True
+        )
+        if result.returncode != 0:
+            print(f"Error running standalone_projection: {result.stderr}")
+            sys.exit(1)
+
+        # Parse the output vectors, one per line
+        output_lines = result.stdout.strip().splitlines()
+        if len(output_lines) != len(hash_lines):
+            print("ERROR 333: Number of output vectors does not match number of queries. ", len(hash_lines), len(output_lines))
+            sys.exit(333)
+        os.remove(tmp_hash_file_path)
+
+        for vector_str in output_lines:
+            vector = np.fromstring(vector_str, sep=" ")
+            vector = vector / np.sqrt(dimension)
+            queries.append(vector)
+
+    index = faiss.read_index(index_folder+"faiss.index")
 
     queries = np.stack(queries).astype("float32")
     query_norms = np.linalg.norm(queries, axis=1)
@@ -89,32 +132,35 @@ def search_index(index_folder, query_file, j):
                     break
         if not found_all:
             nb_searches *= 2  # Double the number of neighbors and try again
+
+    # Collect unique indices of neighbors to recover, flatten and filter out -1 (invalid)
+    indices_to_recover = set()
+    for neighbors in I:
+        for idx in neighbors:
+            if idx >= 0:
+                indices_to_recover.add(idx)
     
-    positions_file = os.path.join(index_folder, "positions.bin")
-    vectors_file = os.path.join(index_folder, "vectors.txt")
-
-    with open(positions_file, "rb") as pos_f, open(vectors_file, "r") as vec_f:
-        pos_f.seek(0, os.SEEK_END)
-        num_vectors = pos_f.tell() // 8
-        pos_f.seek(0)
-        positions = [int.from_bytes(pos_f.read(8), byteorder="little") for _ in range(num_vectors)]
-
-        recovered_vectors = []
-        for idx in I.flatten():
-            if idx < 0 or idx >= len(positions):
-                recovered_vectors.append(None)
+    vectors_name_file = os.path.join(index_folder, "vector_norms.txt")
+    vectors = {} #associates index -> (name, norm)
+    with open(vectors_name_file, "r") as vec_nf:
+        next(vec_nf)  # Skip the first line (dimension)
+        for idx, line in enumerate(vec_nf):
+            if idx not in indices_to_recover:
                 continue
-            vec_f.seek(positions[idx])
-            line = vec_f.readline().strip()
-            recovered_vectors.append(line)
+            line = line.strip()
+            if not line:
+                print("ERROR 455959")
+                sys.exit(23)
+            name = line.split()[0]
+            norm = float(line.split()[1])
+            vectors[idx] = (name, norm, line)
 
+    return_res = []
     for i, neighbors in enumerate(I):
         results = []
         for rank, idx in enumerate(neighbors):
-            neighbor_line = recovered_vectors[rank]
-            neighbor_id = neighbor_line.split(":")[0]
-            neighbor_vec = np.fromstring(neighbor_line.split(":")[1], sep=" ")
-            neighbor_norm = np.linalg.norm(neighbor_vec)
+            neighbor_id = vectors[idx][0]
+            neighbor_norm = vectors[idx][1]
             query_norm = query_norms[i]
             inner_product = D[i, rank]
 
@@ -129,75 +175,61 @@ def search_index(index_folder, query_file, j):
         print(f"Query {i}:")
         for rank, (neighbor_id, jaccard_index, inner_product, neighbor_norm, query_norm) in enumerate(results):
             print(f"  Neighbor {rank}: {neighbor_id} (jaccard: {jaccard_index:.4f}), inner_product: {inner_product:.4f} {neighbor_norm} {query_norm}")
+            return_res.append((i, neighbor_id, jaccard_index))
+
+    return return_res
 
 def test():
 
     index_folder = "/home/roland-faure/Documents/postdoc/penn_state/pairwise_comp/faiss_db"
 
-    vectors_file = os.path.join(index_folder, "vectors.txt")
+    vectors_file = os.path.join(index_folder, "vector_norms.txt")
+    ids = []
     with open(vectors_file, "r") as f:
-        num_vectors = sum(1 for line in f if line.strip())
+        dimension = int(f.readline().strip())
+        for line in f:
+            ids.append(line.strip().split()[0])
+    num_vectors = len(ids)
+        
     print(f"Number of vectors in {vectors_file}: {num_vectors}")
 
     # Draw 20 random vector indices
-    random_indices = random.sample(range(num_vectors), 20)
+    random_samples = set([ids[i] for i in random.sample(range(num_vectors), 20)])
+    # Load all hashes from "hashes.txt"
+    hashes_file = "/home/roland-faure/Documents/postdoc/penn_state/pairwise_comp/all_hashes.txt"
+    query_file = "/home/roland-faure/Documents/postdoc/penn_state/pairwise_comp/test_query.txt"
+    hashes_dict = {}
+    with open(hashes_file, "r") as f, open(query_file, "w") as fq:
+        for line in f:
+            line = line.strip()
+            if not line:
+                continue
+            parts = line.split(":")
+            if len(parts) != 2:
+                continue
+            sample_name = parts[0].strip()
+            if sample_name in random_samples:
+                hash_list = parts[1].strip().split()
+                hashes_dict[sample_name] = hash_list
+                fq.write(line+ "\n")
 
-    # Read all lines into memory for easy access
-    with open(vectors_file, "r") as f:
-        all_lines = [line.strip() for line in f if line.strip()]
+    print(f"Loaded hashes for {len(hashes_dict)} samples from {hashes_file}")
 
     output_file = os.path.join(index_folder, "random_neighbors.txt")
     results = []
-
-    # Load FAISS index and positions
-    index = faiss.read_index(os.path.join(index_folder, "faiss.index"))
-    positions_file = os.path.join(index_folder, "positions.bin")
-    with open(positions_file, "rb") as pos_f:
-        pos_f.seek(0, os.SEEK_END)
-        num_vectors = pos_f.tell() // 8
-        pos_f.seek(0)
-        positions = [int.from_bytes(pos_f.read(8), byteorder="little") for _ in range(num_vectors)]
-
-    # For each random query, search for neighbors using the index
     all_necessary_vectors = set()
-    for idx in random_indices:
-        query_line = all_lines[idx]
-        query_id, query_vec_str = query_line.split(":")
-        all_necessary_vectors.add(query_id)
-        query_vec = np.fromstring(query_vec_str, sep=" ").astype("float32").reshape(1, -1)
-        query_norm = np.linalg.norm(query_vec)
-        if query_norm < 20 :
-            print("this one is ", query_norm)
-            continue
-        faiss.normalize_L2(query_vec)
-        # Search for a reasonable number of neighbors
-        nb_searches = 30
-        D, I = index.search(query_vec, nb_searches)
-        # Recover neighbor info
-        with open(vectors_file, "r") as vec_f:
-            for rank, neighbor_idx in enumerate(I[0]):
-                if neighbor_idx < 0 or neighbor_idx >= len(positions):
-                    continue
-                vec_f.seek(positions[neighbor_idx])
-                neighbor_line = vec_f.readline().strip()
-                neighbor_id, neighbor_vec_str = neighbor_line.split(":")
-                neighbor_vec = np.fromstring(neighbor_vec_str, sep=" ").astype("float32")
-                neighbor_norm = np.linalg.norm(neighbor_vec)
 
-                if neighbor_norm < 20 :
-                    continue
-                if neighbor_norm == 0 or query_norm == 0:
-                    continue
-                actual_inner_product = np.dot(query_vec.flatten(), neighbor_vec)
-                jaccard = actual_inner_product / (neighbor_norm**2 + query_norm**2 - actual_inner_product)
-                if jaccard > 0.05 and neighbor_id != query_id:
-                    results.append((query_id, neighbor_id, jaccard))
-                    all_necessary_vectors.add(neighbor_id)
+    # Use search_index to get neighbors with jaccard > 0.05
+    neighbors = search_index(index_folder + "/", query_file, os.path.dirname(os.path.abspath(__file__)), 0.05)
+    for query_idx, neighbor_id, jaccard in neighbors:
+        query_id = list(random_samples)[query_idx]
+        results.append((query_id, neighbor_id, jaccard))
+        all_necessary_vectors.add(neighbor_id)
+    os.remove(query_file)
 
-    print("queried the 20 vecotrs")
+    print("queried the 20 vectors")
 
     # Load all hashes from "hashes.txt"
-    hashes_file = "all_hashes.txt"
     hashes_dict = {}
     if os.path.exists(hashes_file):
         with open(hashes_file, "r") as f:
@@ -209,12 +241,13 @@ def test():
                 if len(parts) != 2:
                     continue
                 sample_name = parts[0].strip()
-                if sample_name in all_necessary_vectors :
+                if sample_name in all_necessary_vectors:
                     hash_list = parts[1].strip().split()
                     hashes_dict[sample_name] = hash_list
         print(f"Loaded hashes for {len(hashes_dict)} samples from {hashes_file}")
     else:
         print(f"Hashes file {hashes_file} not found.")
+
 
     # For every pair with jaccard > 0.05, compute their actual jaccard from the hashes
     actual_jaccard_results = []
@@ -237,12 +270,20 @@ def test():
     xs = [actual_jaccard for _, _, _, actual_jaccard in actual_jaccard_results]
     ys = [jaccard for _, _, jaccard, _ in actual_jaccard_results]
     plt.figure(figsize=(6,6))
-    plt.scatter(xs, ys, alpha=0.5)
+    plt.scatter(xs, ys, alpha=0.1)
+    # Plot x=y line
+    min_val = min(xs + ys)
+    max_val = max(xs + ys)
+    plt.plot([min_val, max_val], [min_val, max_val], color='red', linestyle='--', label='x = y')
+    plt.xlabel("True Jaccard")
+    plt.ylabel("Estimated Jaccard")
+    plt.legend()
+    plt.show()
 
 def main():
 
-    test()
-    sys.exit()
+    # test()
+    # sys.exit()
 
     parser = argparse.ArgumentParser(description="FAISS indexer and searcher.")
     subparsers = parser.add_subparsers(dest="command", required=True)
@@ -252,17 +293,23 @@ def main():
 
     parser_search = subparsers.add_parser("search", help="Search vectors in a FAISS index.")
     parser_search.add_argument("index_folder", type=str, help="Path to FAISS index folder.")
-    parser_search.add_argument("query_file", type=str, help="Path to query file (one vector per line).")
+    parser_search.add_argument("query_file", type=str, help="Path to query file. Formatted as ID: space_separated_hashes, one ID per line per line")
     parser_search.add_argument("-j", type=float, default=0.1, help="Retrieve all datasets with higher Jaccard index")
 
+    parser.add_argument("-v", "--version", action="store_true", help="Show version and date")
+
     args = parser.parse_args()
+
+    if args.version:
+        print(f"Version: {__version__}, Date: {__date__}")
+        sys.exit(0)
 
     if args.command == "index":
         index_vectors(args.output_index)
     elif args.command == "search":
         if args.index_folder[-1] != "/":
             args.index_folder += "/"
-        search_index(args.index_folder, args.query_file, args.j)
+        search_index(args.index_folder, args.query_file, os.path.dirname(os.path.abspath(__file__)), args.j)
 
 if __name__ == "__main__":
     main()

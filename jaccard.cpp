@@ -10,6 +10,9 @@
 #include <omp.h>
 #include <zlib.h>
 
+#include "random_projection.h"
+
+using Eigen::VectorXi;
 using Eigen::VectorXf;
 using std::string;
 using std::cout;
@@ -162,26 +165,7 @@ void load_signatures(std::string file_name, std::unordered_set<unsigned long int
 }
 
 
-VectorXf transform_set_into_vector(const std::unordered_set<unsigned long int> &hashes, int d){
-    VectorXf vec = VectorXf::Zero(d);
-    for (const auto& hash : hashes) {
-        for (int i = 0; i < d; i += 64) {
-            uint64_t x = static_cast<uint64_t>(hash) + static_cast<uint64_t>(i);
-            x += 0x9e3779b97f4a7c15;
-            x = (x ^ (x >> 30)) * 0xbf58476d1ce4e5b9;
-            x = (x ^ (x >> 27)) * 0x94d049bb133111eb;
-            x = x ^ (x >> 31);
 
-            for (int n = 0; n < 64 && (i + n) < d; ++n) {
-                int projected = 1 - 2 * ((x >> n) & 1);
-                vec[i + n] += projected;
-            }
-        }
-    }
-    float norm_factor = 1.0f / std::sqrt(static_cast<float>(d));
-    vec = vec.array() * norm_factor;
-    return vec;
-}
 
 int main(int argc, char* argv[]) {
     if (argc != 4) {
@@ -210,7 +194,7 @@ int main(int argc, char* argv[]) {
 
 
     std::vector<std::unordered_set<unsigned long int>> all_hash_sets;
-    std::vector<std::pair<int, VectorXf>> all_projected_vectors;
+    std::vector<std::pair<int, VectorXi>> all_projected_vectors;
     // std::vector<std::string> folder_names;
     int nb_loads = 0;
 
@@ -221,11 +205,10 @@ int main(int argc, char* argv[]) {
     std::vector<std::string> sig_files;
     for (const auto& entry : fs::directory_iterator(folder_name)) {
         sig_files.push_back(entry.path().string());
-        // if (++nb_loads > 200) break;
     }
 
     // Prepare storage for results
-    std::vector<std::pair<int, VectorXf>> temp_projected_vectors(sig_files.size());
+    std::vector<std::pair<int, VectorXi>> temp_projected_vectors(sig_files.size());
 
     // Parallel processing with OpenMP
     #pragma omp parallel for schedule(dynamic)
@@ -247,26 +230,36 @@ int main(int argc, char* argv[]) {
     std::chrono::duration<double> elapsed = end - start;
     cout << "Time to compute all projected vectors: " << elapsed.count() << " seconds" << endl;
 
-    // Output all vectors to a file, one vector per line
-    std::ofstream vec_out(index_folder + "vectors.txt");
-    if (!vec_out) {
-        std::cerr << "Error opening vectors.txt for writing." << std::endl;
-    } else {
+    // Output norms and names to a text file, and all vectors as byte-packed int32 to a binary file
+    std::ofstream norm_out(index_folder + "vector_norms.txt");
+    std::ofstream bin_out(index_folder + "vectors.bin", std::ios::binary);
+    if (!norm_out) {
+        std::cerr << "Error opening vector_norms.txt for writing." << std::endl;
+    }
+    if (!bin_out) {
+        std::cerr << "Error opening vectors.bin for writing." << std::endl;
+    }
+    if (norm_out && bin_out) {
+        norm_out << d << "\n";
         int index_of_vector = 0;
         for (const auto& pair : all_projected_vectors) {
             // Extract the base name (DRR111514) from the path
             std::string stem = fs::path(sig_files[index_of_vector]).stem().string();
             std::string base_name = stem.substr(0, stem.find('.'));
-            vec_out << base_name << ":";
-            const VectorXf& vec = pair.second;
+            // Cast vec to VectorXf, divide by sqrt(d), then compute norm
+            VectorXi vec = pair.second;
+            VectorXf vec_f = pair.second.cast<float>() / std::sqrt(static_cast<float>(d));
+            double norm = vec_f.norm();
+            norm_out << base_name << " " << norm << "\n";
+            // Write vector as int32_t, byte-packed
             for (int i = 0; i < vec.size(); ++i) {
-                vec_out << vec[i];
-                if (i + 1 < vec.size()) vec_out << " ";
+                int32_t val = static_cast<int32_t>(vec[i]);
+                bin_out.write(reinterpret_cast<const char*>(&val), sizeof(int32_t));
             }
-            vec_out << "\n";
             index_of_vector++;
         }
-        vec_out.close();
+        norm_out.close();
+        bin_out.close();
     }
 
     // std::vector<std::pair<double, double>> jaccard_pairs;
