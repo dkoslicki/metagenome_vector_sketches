@@ -12,7 +12,7 @@ import sys
 import tempfile
 import subprocess
 
-__version__ = "1.0.0"
+__version__ = "1.0.1"
 __date__ = "26/09/2025"
 
 def index_vectors(output_dir):

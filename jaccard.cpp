@@ -103,6 +103,15 @@ void load_signatures(std::string file_name, std::unordered_set<unsigned long int
         if (entry.path().extension() == ".gz") {
             std::string json_str = read_gzipped_file(entry.path().string());
             if (json_str.empty()) continue;
+            size_t ksize_pos = json_str.find("\"ksize\"");
+            if (ksize_pos == std::string::npos) continue;
+            size_t colon_pos = json_str.find(':', ksize_pos);
+            if (colon_pos == std::string::npos) continue;
+            size_t ksize_end = json_str.find_first_of(",}", colon_pos);
+            std::string ksize_str = json_str.substr(colon_pos + 1, ksize_end - colon_pos - 1);
+            ksize_str.erase(std::remove_if(ksize_str.begin(), ksize_str.end(), ::isspace), ksize_str.end());
+            if (ksize_str != "31") continue;
+
             // Manually extract the "mins" array from the JSON string
             size_t mins_pos = json_str.find("\"mins\"");
             if (mins_pos == std::string::npos) continue;
