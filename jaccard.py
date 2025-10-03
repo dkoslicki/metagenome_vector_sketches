@@ -122,6 +122,8 @@ def search_index(index_folder, query_file, path_exec, j):
     found_all = False
     while not found_all:
         D, I = index.search(queries, nb_searches)
+        print("zeqoiu, ", queries)
+        print(D)
         # Check if all neighbors above threshold are included for each query
         found_all = True
         for i in range(D.shape[0]):
