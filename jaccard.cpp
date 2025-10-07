@@ -154,23 +154,23 @@ void load_signatures(std::string file_name, std::unordered_set<unsigned long int
         std::cerr << "Failed to clean up temp directory: " << temp_dir << std::endl;
     }
 
-    // #pragma omp critical
-    // {
-    //     // Extract the base name (e.g., DRR111514) from the path
-    //     std::string stem = fs::path(file_name).stem().string();
-    //     std::string base_name = stem.substr(0, stem.find('.'));
-    //     static std::ofstream hash_out("all_hashes.txt", std::ios::app);
-    //     if (hash_out) {
-    //         hash_out << base_name << ":";
-    //         for (const auto& h : hashes) {
-    //             hash_out << " " << h;
-    //         }
-    //         hash_out << "\n";
-    //         hash_out.flush();
-    //     } else {
-    //         std::cerr << "Error opening all_hashes.txt for writing." << std::endl;
-    //     }
-    // }
+    #pragma omp critical
+    {
+        // Extract the base name (e.g., DRR111514) from the path
+        std::string stem = fs::path(file_name).stem().string();
+        std::string base_name = stem.substr(0, stem.find('.'));
+        static std::ofstream hash_out("all_hashes.txt", std::ios::app);
+        if (hash_out) {
+            hash_out << base_name << ":";
+            for (const auto& h : hashes) {
+                hash_out << " " << h;
+            }
+            hash_out << "\n";
+            hash_out.flush();
+        } else {
+            std::cerr << "Error opening all_hashes.txt for writing." << std::endl;
+        }
+    }
 }
 
 

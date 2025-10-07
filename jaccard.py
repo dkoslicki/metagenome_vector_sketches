@@ -12,10 +12,10 @@ import sys
 import tempfile
 import subprocess
 
-__version__ = "1.0.2"
-__date__ = "27/09/2025"
+__version__ = "1.1.0"
+__date__ = "03/10/2025"
 
-def index_vectors(output_dir):
+def index_vectors(output_dir):    
     vectors = []
 
     # Ensure output_dir exists and contains only vectors.txt
@@ -49,6 +49,13 @@ def index_vectors(output_dir):
     faiss.normalize_L2(vectors)
 
     index = faiss.IndexFlatIP(dim)  # Use inner product metric
+    #index = faiss.index_factory(dim, "IVF65536,Flat", faiss.METRIC_INNER_PRODUCT)
+    #index.train(vectors)
+    # index = faiss.index_factory(dim, "NSG,Flat", faiss.METRIC_INNER_PRODUCT)
+    # index.train(vectors)
+    # index = faiss.index_factory(dim, "HNSW", faiss.METRIC_INNER_PRODUCT)
+    # index.M = 50
+
     index.add(vectors)
     faiss.write_index(index, output_index)
     print(f"Indexed {len(vectors)} vectors of dimension {dim} into {output_index}.")
@@ -117,22 +124,54 @@ def search_index(index_folder, query_file, path_exec, j):
     faiss.normalize_L2(queries)
     minimum_required_inner_product = 2*j/(1+j)
     
-    # Start with a reasonable number of neighbors, increase until all above threshold are found
-    nb_searches = 10
-    found_all = False
-    while not found_all:
-        D, I = index.search(queries, nb_searches)
-        # Check if all neighbors above threshold are included for each query
-        found_all = True
-        for i in range(D.shape[0]):
-            if np.any(D[i] > minimum_required_inner_product):
-                # If there are neighbors above threshold, check if the last returned is still above threshold
-                if D[i][-1] > minimum_required_inner_product:
-                    # Might need to fetch more neighbors
-                    found_all = False
-                    break
-        if not found_all:
-            nb_searches *= 2  # Double the number of neighbors and try again
+    # Start with a reasonable number of neighbors, increase only for queries still above threshold
+    initial_nb_searches = 50
+    remaining_queries = [np.arange(len(queries))] + [[] for j in range(19)] #we wont look for more than 50*3^19 neighos
+    D_all = np.full((len(queries), initial_nb_searches), 0, dtype=np.float32)
+    I_all = np.full((len(queries), initial_nb_searches), -1, dtype=np.int32)
+
+    index_nb_of_neighbors = 0
+    while index_nb_of_neighbors < len(remaining_queries):
+
+        if len(remaining_queries[index_nb_of_neighbors]) > 0:
+
+            remaining_queries[index_nb_of_neighbors] = np.array(remaining_queries[index_nb_of_neighbors])
+            
+            nb_searches = initial_nb_searches * 3**index_nb_of_neighbors
+            print(f"Searching {nb_searches} : ", remaining_queries[index_nb_of_neighbors])
+
+            # Resize D_all and I_all to accommodate more neighbors
+            if D_all.shape[1] < nb_searches:
+                new_shape = (D_all.shape[0], nb_searches)
+                D_all_resized = np.full(new_shape, 0, dtype=np.float32)
+                I_all_resized = np.full(new_shape, -1, dtype=np.int32)
+                D_all_resized[:, :D_all.shape[1]] = D_all
+                I_all_resized[:, :I_all.shape[1]] = I_all
+                D_all = D_all_resized
+                I_all = I_all_resized
+
+            D, I = index.search(queries[remaining_queries[index_nb_of_neighbors]], nb_searches)
+            # Overwrite results for remaining queries
+            D_all[remaining_queries[index_nb_of_neighbors], :] = D
+            I_all[remaining_queries[index_nb_of_neighbors], :] = I
+
+            # Find queries where last returned neighbor is still above threshold
+            still_above = False
+            for idx, q_idx in enumerate(remaining_queries[index_nb_of_neighbors]):
+                if np.any(D[idx] > minimum_required_inner_product):
+                    if D[idx, -1] > minimum_required_inner_product :
+                        #let's try to estimate how many neighbors we will have to query to get to the threshold (if it is 1000, no need to query 100)
+                        if D[idx, -1] - 0.05 > minimum_required_inner_product and index_nb_of_neighbors <= len(remaining_queries) -3: #we still have quite a lot of neighbor to look for
+                            remaining_queries[index_nb_of_neighbors+2].append(q_idx)
+                        elif index_nb_of_neighbors <= len(remaining_queries) -2:
+                            remaining_queries[index_nb_of_neighbors+1].append(q_idx)
+                        still_above = True           
+
+        index_nb_of_neighbors += 1 
+
+
+    D = D_all
+    I = I_all
 
     # Collect unique indices of neighbors to recover, flatten and filter out -1 (invalid)
     indices_to_recover = set()
@@ -158,14 +197,19 @@ def search_index(index_folder, query_file, path_exec, j):
     return_res = []
     for i, neighbors in enumerate(I):
         results = []
+        query_norm = query_norms[i]
+        if query_norm == 0:
+            continue
         for rank, idx in enumerate(neighbors):
+            if idx == -1:
+                continue
             neighbor_id = vectors[idx][0]
             neighbor_norm = vectors[idx][1]
-            query_norm = query_norms[i]
+            
             inner_product = D[i, rank]
 
-            jaccard_index = inner_product * query_norm * neighbor_norm / (neighbor_norm**2 + query_norm**2 - inner_product * query_norm * neighbor_norm)
 
+            jaccard_index = inner_product * query_norm * neighbor_norm / (neighbor_norm**2 + query_norm**2 - inner_product * query_norm * neighbor_norm)
             if jaccard_index > j:
                 results.append((neighbor_id, jaccard_index, inner_product, neighbor_norm, query_norm))
 
@@ -290,19 +334,26 @@ def main():
 
     parser_index = subparsers.add_parser("index", help="Index vectors from a file.")
     parser_index.add_argument("output_index", type=str, help="Path to output FAISS index folder.")
+    parser_index.add_argument("-t", "--threads", type=int, default=1, help="Number of threads [1]")
 
     parser_search = subparsers.add_parser("search", help="Search vectors in a FAISS index.")
     parser_search.add_argument("index_folder", type=str, help="Path to FAISS index folder.")
     parser_search.add_argument("query_file", type=str, help="Path to query file. Formatted as ID: space_separated_hashes, one ID per line per line")
     parser_search.add_argument("-j", type=float, default=0.1, help="Retrieve all datasets with higher Jaccard index")
-
+ 
+    parser_search.add_argument("-t", "--threads", type=int, default=1, help="Number of threads [1]")
     parser.add_argument("-v", "--version", action="store_true", help="Show version and date")
 
     args = parser.parse_args()
 
+    faiss.omp_set_num_threads(args.threads)
+
     if args.version:
         print(f"Version: {__version__}, Date: {__date__}")
         sys.exit(0)
+
+    print(f"Version: {__version__}, Date: {__date__}")
+    print("Command line:", " ".join(sys.argv))
 
     if args.command == "index":
         index_vectors(args.output_index)
