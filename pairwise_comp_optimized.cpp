@@ -455,6 +455,7 @@ int main(int argc, char* argv[]) {
                     result.values[k]
                 );
             }
+        }
     }
 
     auto end_time = chrono::high_resolution_clock::now();
