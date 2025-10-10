@@ -126,83 +126,112 @@ vector<pair<int, int64_t>> load_shard_row_index(const string& shard_folder) {
     return address_of_rows;
 }
 
-// Load neighbors for a specific row from its shard
-NeighborData load_neighbors_for_row(const string& matrix_folder, int query_row, 
-                                   int total_vectors, int num_shards) {
-    NeighborData result;
-    
-    // Determine which shard contains this row
-    int shard_idx = get_shard_for_row(query_row, total_vectors, num_shards);
-    
-    string shard_folder = matrix_folder + "/shard_" + to_string(shard_idx);
-    
-    // Decompress files in this shard if needed
-    decompress_zstd_files(shard_folder);
-    
-    // Load the row index for this shard
-    vector<pair<int, int64_t>> address_of_rows = load_shard_row_index(shard_folder);
-    if (address_of_rows.empty()) {
-        return result;
+/*
+ * Batch load neighbors for a set of rows.
+ * - rows: vector of row indices to query.
+ * - Returns: vector<NeighborData> in the same order as input rows.
+ * 
+ * This function batches queries by shard, decompresses each shard only once,
+ * loads all requested rows from that shard, and deletes the uncompressed files after use.
+ */
+vector<NeighborData> load_neighbors_for_rows(
+    const string& matrix_folder,
+    const vector<int>& rows,
+    int total_vectors,
+    int num_shards
+) {
+    // Map from shard index to vector of (input index, row)
+    unordered_map<int, vector<pair<size_t, int>>> shard_to_queries;
+    for (size_t i = 0; i < rows.size(); ++i) {
+        int shard_idx = get_shard_for_row(rows[i], total_vectors, num_shards);
+        shard_to_queries[shard_idx].emplace_back(i, rows[i]);
     }
 
-    // Get file size to handle the last row
-    string bin_filename = shard_folder + "/matrix.bin";
-    ifstream bin_file(bin_filename, ios::binary);
-    if (!bin_file) {
-        cerr << "Error: Could not open " << bin_filename << endl;
-        return result;
-    }
-    bin_file.seekg(0, ios::end);
-    int64_t file_size = bin_file.tellg();
-    
-    int64_t row_address = -1;
-    int number_of_neighbors = 0;
-    bool found = false;
-    
-    for (size_t i = 0; i < address_of_rows.size(); ++i) {
-        if (address_of_rows[i].first == query_row) {
-            row_address = address_of_rows[i].second;
-            if (i + 1 < address_of_rows.size()) {
-                number_of_neighbors = (address_of_rows[i + 1].second - row_address) / 8;
+    vector<NeighborData> results(rows.size());
+
+    for (const auto& [shard_idx, queries] : shard_to_queries) {
+        string shard_folder = matrix_folder + "/shard_" + to_string(shard_idx);
+
+        // Decompress files in this shard
+        decompress_zstd_files(shard_folder);
+
+        // Load the row index for this shard
+        vector<pair<int, int64_t>> address_of_rows = load_shard_row_index(shard_folder);
+        if (address_of_rows.empty()) {
+            // All queries in this shard will be empty
+            for (const auto& [out_idx, _] : queries) {
+                results[out_idx] = NeighborData{};
+            }
+            // Clean up and continue
+            cleanup_decompressed_files();
+            continue;
+        }
+
+        // Get file size to handle the last row
+        string bin_filename = shard_folder + "/matrix.bin";
+        ifstream bin_file(bin_filename, ios::binary);
+        if (!bin_file) {
+            cerr << "Error: Could not open " << bin_filename << endl;
+            for (const auto& [out_idx, _] : queries) {
+                results[out_idx] = NeighborData{};
+            }
+            cleanup_decompressed_files();
+            continue;
+        }
+        bin_file.seekg(0, ios::end);
+        int64_t file_size = bin_file.tellg();
+
+        // Build a map from row to address index for fast lookup
+        unordered_map<int, size_t> row_to_addr_idx;
+        for (size_t i = 0; i < address_of_rows.size(); ++i) {
+            row_to_addr_idx[address_of_rows[i].first] = i;
+        }
+
+        for (const auto& [out_idx, query_row] : queries) {
+            NeighborData result;
+            auto it = row_to_addr_idx.find(query_row);
+            if (it == row_to_addr_idx.end()) {
+                results[out_idx] = result;
+                continue;
+            }
+            size_t addr_idx = it->second;
+            int64_t row_address = address_of_rows[addr_idx].second;
+            int number_of_neighbors = 0;
+            if (addr_idx + 1 < address_of_rows.size()) {
+                number_of_neighbors = (address_of_rows[addr_idx + 1].second - row_address) / 8;
             } else {
                 number_of_neighbors = (file_size - row_address) / 8;
             }
-            found = true;
-            break;
+            if (number_of_neighbors <= 0) {
+                results[out_idx] = result;
+                continue;
+            }
+
+            // Read the neighbor data
+            bin_file.seekg(row_address);
+
+            vector<int32_t> neighbor_differences(number_of_neighbors);
+            bin_file.read(reinterpret_cast<char*>(neighbor_differences.data()), number_of_neighbors * sizeof(int32_t));
+            vector<int32_t> neighbor_values(number_of_neighbors);
+            bin_file.read(reinterpret_cast<char*>(neighbor_values.data()), number_of_neighbors * sizeof(int32_t));
+
+            result.neighbor_indices.resize(number_of_neighbors);
+            result.neighbor_values.resize(number_of_neighbors);
+
+            int current_col = 0;
+            for (int i = 0; i < number_of_neighbors; ++i) {
+                current_col += neighbor_differences[i];
+                result.neighbor_indices[i] = current_col;
+                result.neighbor_values[i] = neighbor_values[i];
+            }
+            results[out_idx] = std::move(result);
         }
+
+        // Clean up decompressed files for this shard
+        cleanup_decompressed_files();
     }
-    
-    if (!found || number_of_neighbors <= 0) {
-        return result;
-    }
-    
-    // Read the neighbor data
-    bin_file.seekg(row_address);
-    
-    // Read neighbor column differences
-    vector<int32_t> neighbor_differences(number_of_neighbors);
-    for (int i = 0; i < number_of_neighbors; ++i) {
-        bin_file.read(reinterpret_cast<char*>(&neighbor_differences[i]), sizeof(int32_t));
-    }
-    
-    // Read neighbor values
-    vector<int32_t> neighbor_values(number_of_neighbors);
-    for (int i = 0; i < number_of_neighbors; ++i) {
-        bin_file.read(reinterpret_cast<char*>(&neighbor_values[i]), sizeof(int32_t));
-    }
-    
-    // Convert differences to actual indices
-    result.neighbor_indices.resize(number_of_neighbors);
-    result.neighbor_values.resize(number_of_neighbors);
-    
-    int current_col = 0;
-    for (int i = 0; i < number_of_neighbors; ++i) {
-        current_col += neighbor_differences[i];
-        result.neighbor_indices[i] = current_col;
-        result.neighbor_values[i] = neighbor_values[i];
-    }
-    
-    return result;
+
+    return results;
 }
 
 // Convert matrix to COO sparse Zarr format using z5
@@ -228,13 +257,19 @@ void convert_to_zarr(const string& matrix_folder, const string& zarr_path) {
     int64_t total_nnz = 0;
     cout << "Counting non-zero elements..." << endl;
     
-    for (int row = 0; row < total_vectors; ++row) {
-        NeighborData neighbors = load_neighbors_for_row(matrix_folder, row, total_vectors, num_shards);
-        total_nnz += neighbors.neighbor_indices.size();
-        
-        if (row % 1000 == 0) {
-            cout << "Processed " << row << "/" << total_vectors << " rows for counting" << endl;
+    // Batch process rows for counting non-zero elements
+    const int batch_size = 1000;
+    for (int start_row = 0; start_row < total_vectors; start_row += batch_size) {
+        int end_row = std::min(start_row + batch_size, total_vectors);
+        vector<int> batch_rows;
+        for (int row = start_row; row < end_row; ++row) {
+            batch_rows.push_back(row);
         }
+        vector<NeighborData> neighbors_batch = load_neighbors_for_rows(matrix_folder, batch_rows, total_vectors, num_shards);
+        for (const auto& neighbors : neighbors_batch) {
+            total_nnz += neighbors.neighbor_indices.size();
+        }
+        cout << "Processed " << end_row << "/" << total_vectors << " rows for counting" << endl;
     }
     
     cout << "Total non-zero elements: " << total_nnz << endl;
@@ -288,17 +323,25 @@ void convert_to_zarr(const string& matrix_folder, const string& zarr_path) {
     all_cols.reserve(total_nnz);
     all_data.reserve(total_nnz);
     
-    for (int row = 0; row < total_vectors; ++row) {
-        NeighborData neighbors = load_neighbors_for_row(matrix_folder, row, total_vectors, num_shards);
-        
-        for (size_t i = 0; i < neighbors.neighbor_indices.size(); ++i) {
-            all_rows.push_back(row);
-            all_cols.push_back(neighbors.neighbor_indices[i]);
-            all_data.push_back(neighbors.neighbor_values[i]);
+    // Batch process rows for collecting COO data
+    for (int start_row = 0; start_row < total_vectors; start_row += num_shards) {
+        int end_row = std::min(start_row + num_shards, total_vectors);
+        vector<int> batch_rows;
+        for (int row = start_row; row < end_row; ++row) {
+            batch_rows.push_back(row);
         }
-        
-        if (row % 1000 == 0) {
-            cout << "Collected data for " << row << "/" << total_vectors << " rows" << endl;
+        vector<NeighborData> neighbors_batch = load_neighbors_for_rows(matrix_folder, batch_rows, total_vectors, num_shards);
+        for (size_t i = 0; i < neighbors_batch.size(); ++i) {
+            int row = start_row + static_cast<int>(i);
+            const NeighborData& neighbors = neighbors_batch[i];
+            for (size_t j = 0; j < neighbors.neighbor_indices.size(); ++j) {
+                all_rows.push_back(row);
+                all_cols.push_back(neighbors.neighbor_indices[j]);
+                all_data.push_back(neighbors.neighbor_values[j]);
+            }
+        }
+        if (end_row % 1000 == 0 || end_row == total_vectors) {
+            cout << "Collected data for " << end_row << "/" << total_vectors << " rows" << endl;
         }
     }
     
