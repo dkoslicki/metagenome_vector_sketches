@@ -84,4 +84,7 @@ def plot_error_random_proj():
     plt.grid(True)
     plt.show()
 
+def plot_error_minhash():
 
+    #binomial of parameter J 
+    ...
