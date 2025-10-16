@@ -32,27 +32,22 @@ add_subdirectory(bits)
 
 # ==== Executables ====
 add_executable(project_everything
-    project_everything.cpp
-    random_projection.cpp
+    src/project_everything.cpp
+    src/random_projection.cpp
 )
 
 add_executable(standalone_projection
-    standalone_projection.cpp
-    random_projection.cpp
+    src/standalone_projection.cpp
+    src/random_projection.cpp
 )
 
 add_executable(pairwise_comp_optimized
-    pairwise_comp_optimized.cpp
+    src/pairwise_comp_optimized.cpp
 )
 
 add_executable(query_ava_matrix
-    query_ava_matrix.cpp
+    src/query_ava_matrix.cpp
 )
-
-add_executable(ef_test
-    tests/ef_test.cpp
-)
-target_link_libraries(ef_test PRIVATE BITS)
 
 # ==== Include directories ====
 target_include_directories(project_everything PRIVATE ${EIGEN_INCLUDE_DIR})
@@ -69,3 +64,18 @@ add_custom_target(clean-all
     COMMAND ${CMAKE_BUILD_TOOL} clean
     COMMAND ${CMAKE_COMMAND} -E rm -f project_everything standalone_projection pairwise_comp_optimized query_ava_matrix
 )
+
+
+# ==== Python bindings ====
+find_package(Python COMPONENTS Interpreter Development REQUIRED)
+find_package(pybind11 CONFIG REQUIRED)  # prefer installed pybind11 config
+# If the above fails, install pybind11 or use the pybind11 header-only fallback.
+
+pybind11_add_module(read_pc_mat_module src/read_pc_mat.cpp)
+
+set_target_properties(read_pc_mat_module PROPERTIES
+    LIBRARY_OUTPUT_DIRECTORY ${CMAKE_SOURCE_DIR}/src
+)
+
+# Optionally set optimization flags
+target_compile_options(read_pc_mat_module PRIVATE -O3 -march=native)

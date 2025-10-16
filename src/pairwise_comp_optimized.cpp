@@ -10,7 +10,7 @@
 #include <filesystem>
 
 //#include <immintrin.h>
-#include "bits/include/elias_fano.hpp"
+#include "../bits/include/elias_fano.hpp"
 #include "clipp.h"
     
 namespace fs = std::filesystem;

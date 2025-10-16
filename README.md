@@ -1,33 +1,54 @@
 # metagenome_vector_sketches
 Repository with code to sketch genomic data with random projection
 
-## Usage
+## Installation
 
-Create projected vectors from fracminhash data into the index folder:
 ``` shell
-../project_everything <input_folder> <index_folder> [-t threads] [-d dimension] [-s strategy]
+git clone --recursive https://github.com/RolandFaure/metagenome_vector_sketches.git
+
+conda create -n faiss_env python=3.12
+conda activate faiss_env
+conda install -c pytorch faiss-cpu
+
+cd metagenome_vector_sketches
+mkdir build
+cd build
+cmake -DPYTHON_EXECUTABLE=$(which python) ..
+cmake --build . -j 8
 ```
 
-Example:
+
+## Usage
+
+We will use `test` folder for the example. All executables are in the `build` folder, and shows usage when run without arguments.
+
+Create projected vectors from fracminhash data into the index folder:
 
 ```shell
-../project_everything toy toy_index/ -t 8 -d 1024 -s 0
+../build/project_everything toy toy_index/ -t 8 -d 1024 -s 0
 ```
 
 Use the vectors to create FAISS index:
 
 ``` shell
-python3 ../jaccard.py index toy_index -t 8
+python3 ../build/jaccard.py index toy_index -t 8
 ```
 
 Use the vectors to create pairwise matrix:
 
 ``` shell
-../pairwise_comp_optimized --vectors toy_index/vectors.bin --dimension 1024 --output_folder toy_index/ --max_memory_gb 12 --num_threads 8
+../build/pairwise_comp_optimized --vectors toy_index/vectors.bin --dimension 1024 --output_folder toy_index/ --max_memory_gb 12 --num_threads 8
 ```
 
 Then, to query using the AVA matrix:
 
 ``` shell
- ../query_ava_matrix --matrix_folder toy_index/shard_0/ --query_ids 10
+ ../build/query_ava_matrix --matrix_folder toy_index/ --query_ids 10
+```
+
+To use python interface:
+
+```shell
+python3 ../src/read_pc_mat.py toy_index query_ids.txt
+
 ```
