@@ -361,6 +361,11 @@ int main(int argc, char* argv[]) {
         return 1;
     }
 
+    // Ensure output folder ends with '/'
+    if (!output_folder.empty() && output_folder.back() != '/' && output_folder.back() != '\\') {
+        output_folder += '/';
+    }
+
     string norms_file = output_folder + "vector_norms.txt";
     if (!fs::exists(norms_file)) {
         cerr << "Error: Required file 'vector_norms.txt' not found in output folder: " << output_folder << endl;
@@ -377,11 +382,6 @@ int main(int argc, char* argv[]) {
         if (pos == string::npos) continue;
         double norm = stod(line.substr(pos + 1));
         all_norms.push_back(norm*norm);
-    }
-
-    // Ensure output folder ends with '/'
-    if (!output_folder.empty() && output_folder.back() != '/' && output_folder.back() != '\\') {
-        output_folder += '/';
     }
 
     // Output to subfolder for this shard

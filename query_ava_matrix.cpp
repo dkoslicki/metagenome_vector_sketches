@@ -248,7 +248,7 @@ vector<NeighborData> load_neighbors_for_rows(
             bin_file.read(reinterpret_cast<char*>(neighbor_differences.data()), number_of_neighbors * sizeof(int32_t));
             vector<int32_t> neighbor_values(number_of_neighbors);
             bin_file.read(reinterpret_cast<char*>(neighbor_values.data()), number_of_neighbors * sizeof(int32_t));
-            bin_file.read(reinterpret_cast<char*>(neighbor_values.data()), number_of_neighbors * sizeof(int32_t));
+            bin_file.read(reinterpret_cast<char*>(neighbor_values.data()), number_of_neighbors * sizeof(int32_t)); //FIXME: two times?
 
             result.neighbor_indices.resize(number_of_neighbors);
             result.neighbor_values.resize(number_of_neighbors);
@@ -497,6 +497,7 @@ int main(int argc, char* argv[]) {
     load_vector_norms(matrix_folder, vector_norms);
     
     int total_vectors = identifiers.size();
+    std::cout<<"Total vectors loaded: " << total_vectors << endl;
     if (total_vectors <= 0) {
         cerr << "Error: Could not determine total number of vectors" << endl;
         return 1;
