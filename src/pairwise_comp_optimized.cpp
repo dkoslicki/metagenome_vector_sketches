@@ -529,8 +529,8 @@ int main(int argc, char* argv[]) {
     cout << "Total results: " << all_results.size() << endl;
 
     // Write results to the shard subfolder
-    // write_sparse_results_prev(shard_folder, all_results, dimension);
-    write_sparse_results(shard_folder, all_results, dimension);
+    write_sparse_results_prev(shard_folder, all_results, dimension);
+    // write_sparse_results(shard_folder, all_results, dimension);
     
     return 0;
 }
