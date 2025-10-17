@@ -5,10 +5,13 @@ Repository with code to sketch genomic data with random projection
 
 ``` shell
 git clone --recursive https://github.com/RolandFaure/metagenome_vector_sketches.git
+git submodule update --init --recursive
 
 conda create -n faiss_env python=3.12
 conda activate faiss_env
 conda install -c pytorch faiss-cpu
+conda install -c conda-forge pybind11
+conda install scipy matplotlib
 
 cd metagenome_vector_sketches
 mkdir build
@@ -25,13 +28,14 @@ We will use `test` folder for the example. All executables are in the `build` fo
 Create projected vectors from fracminhash data into the index folder:
 
 ```shell
+cd test/
 ../build/project_everything toy toy_index/ -t 8 -d 1024 -s 0
 ```
 
 Use the vectors to create FAISS index:
 
 ``` shell
-python3 ../build/jaccard.py index toy_index -t 8
+python3 ../src/jaccard.py index toy_index -t 8
 ```
 
 Use the vectors to create pairwise matrix:
@@ -43,7 +47,7 @@ Use the vectors to create pairwise matrix:
 Then, to query using the AVA matrix:
 
 ``` shell
- ../build/query_ava_matrix --matrix_folder toy_index/ --query_ids 10
+../build/query_ava_matrix --matrix_folder toy_index/ --query_ids 10
 ```
 
 To use python interface:
