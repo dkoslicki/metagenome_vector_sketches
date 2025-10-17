@@ -351,6 +351,14 @@ void write_sparse_results(const string& folder,
     // Map from row to first byte position in the binary file
     int64_t current_pos = 0;
 
+    auto get_dot_products_vec = [&](const vector<int64_t>& vals) {
+        vector<int64_t> dot_products_vec(vals.size());
+        for (size_t k = 0; k < vals.size(); ++k) {
+            dot_products_vec[k] = static_cast<int64_t>(round(static_cast<double>(vals[k]) / dimension));
+        }
+        return dot_products_vec;
+    };
+
     // Write each row's results in the new format, iterating only over rows present in reorganized_results
     for (const auto& [row, pair] : reorganized_results) {
         //NOTE: Assumes #genomes can be read in int32_t
@@ -358,27 +366,19 @@ void write_sparse_results(const string& folder,
         const vector<int64_t>& vals = pair.second;
 
         // Record the first position for this row
-        index_out << row << " " << current_pos << endl;
+        essentials::save_pod(index_out, row);
+        essentials::save_pod(index_out, current_pos);
+        
         bits::elias_fano<> ef;
         ef.encode(cols.begin(), cols.size(), cols.back()+1);
         ef.save(bin_out);
         current_pos += ef.num_bytes();
 
-        // Write column indices as differences (deltas) from previous col
-        // int32_t prev_col = 0;
-        // for (size_t k = 1; k < cols.size(); ++k) {
-            // int32_t delta_col = cols[k] - prev_col;
-            // prev_col = cols[k];
-            // bin_out.write(reinterpret_cast<const char*>(&delta_col), sizeof(int32_t));
-            // current_pos += sizeof(int32_t);
-        // }
-
-        // Write values (divided by 2048)
-        for (size_t k = 0; k < vals.size(); ++k) {
-            int32_t val32 = static_cast<int32_t>(round(static_cast<double>(vals[k]) / dimension));
-            bin_out.write(reinterpret_cast<const char*>(&val32), sizeof(int32_t));
-            current_pos += sizeof(int32_t);
-        }
+        vector<int64_t> dot_products_vec = get_dot_products_vec(vals);
+        bits::compact_vector cv;
+        cv.build(dot_products_vec.begin(), dot_products_vec.size());
+        cv.save(bin_out);
+        current_pos += cv.num_bytes();
     }
 
     // Compress the output files using zstd and remove the originals
@@ -529,8 +529,8 @@ int main(int argc, char* argv[]) {
     cout << "Total results: " << all_results.size() << endl;
 
     // Write results to the shard subfolder
-    write_sparse_results_prev(shard_folder, all_results, dimension);
-    // write_sparse_results(shard_folder, all_results, dimension);
+    // write_sparse_results_prev(shard_folder, all_results, dimension);
+    write_sparse_results(shard_folder, all_results, dimension);
     
     return 0;
 }
