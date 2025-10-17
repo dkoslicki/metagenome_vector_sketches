@@ -10,8 +10,7 @@ git submodule update --init --recursive
 conda create -n faiss_env python=3.12
 conda activate faiss_env
 conda install -c pytorch faiss-cpu
-conda install -c conda-forge pybind11
-conda install scipy matplotlib
+conda install -c conda-forge pybind11 scipy matplotlib
 
 cd metagenome_vector_sketches
 mkdir build
