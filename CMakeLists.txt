@@ -58,6 +58,18 @@ set_target_properties(pc_mat_lib PROPERTIES POSITION_INDEPENDENT_CODE ON)
 target_include_directories(pc_mat_lib PUBLIC include)
 
 
+add_library(pc_mat_cmp_lib STATIC src/read_pc_mat_cmp.cpp)
+set_target_properties(pc_mat_cmp_lib PROPERTIES POSITION_INDEPENDENT_CODE ON)
+target_include_directories(pc_mat_cmp_lib PUBLIC 
+    ${CMAKE_SOURCE_DIR}/bits/include/
+    ${CMAKE_SOURCE_DIR}/bits/external/essentials/include/
+)
+
+add_executable(query_pc_mat
+    src/query_pc_mat.cpp
+)
+target_link_libraries(query_pc_mat PRIVATE pc_mat_cmp_lib)
+
 # ==== Link libraries ====
 # Only pairwise_comp_optimized depends on the BITS library
 target_link_libraries(pairwise_comp_optimized PRIVATE BITS)

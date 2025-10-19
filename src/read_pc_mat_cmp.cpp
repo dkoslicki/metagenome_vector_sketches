@@ -1,4 +1,7 @@
 #include "read_pc_mat.h"
+#include "essentials.hpp"
+#include "compact_vector.hpp"
+#include "elias_fano.hpp"
 
 namespace fs = std::filesystem;
 
@@ -11,7 +14,7 @@ namespace pc_mat {
     // Function to clean up all decompressed files
     void cleanup_decompressed_files(const string& folder) {
         // Remove decompressed .bin and .txt files, keeping only .zst files
-        string cmd = "cd " + folder + " && rm -f matrix.bin row_index.txt 2>/dev/null || true";
+        string cmd = "cd " + folder + " && rm -f matrix.bin row_index.bin 2>/dev/null || true";
         system(cmd.c_str());
     }
 
@@ -110,24 +113,22 @@ namespace pc_mat {
 
     // Load row index mapping from row_index.txt in a specific shard
     vector<pair<int, int64_t>> load_shard_row_index(const string& shard_folder) {
-        vector<pair<int, int64_t>> address_of_rows;
+        vector<pair<int32_t, int64_t>> address_of_rows;
         
-        string index_filename = shard_folder + "/row_index.txt";
-        ifstream index_file(index_filename);
+        string index_filename = shard_folder + "/row_index.bin";
+        ifstream index_file(index_filename, ios::binary);
         
         if (!index_file) {
             cerr << "Error: Could not open " << index_filename << endl;
             return address_of_rows;
         }
-        
-        string line;
-        while (getline(index_file, line)) {
-            istringstream iss(line);
-            int row;
-            int64_t address;
-            if (iss >> row >> address) {
-                address_of_rows.push_back({row, address});
-            }
+        bits::compact_vector row_cv;
+        bits::compact_vector address_cv;
+        row_cv.load(index_file);
+        address_cv.load(index_file);
+
+        for (size_t i = 0; i < row_cv.size(); ++i) {
+            address_of_rows.push_back({static_cast<int>(row_cv[i]), static_cast<int64_t>(address_cv[i])});
         }
         
         return address_of_rows;
@@ -194,7 +195,7 @@ namespace pc_mat {
             for (size_t i = 0; i < address_of_rows.size(); ++i) {
                 row_to_addr_idx[address_of_rows[i].first] = i;
             }
-
+            
             for (const auto& [out_idx, query_row] : queries) {
                 NeighborData result;
                 auto it = row_to_addr_idx.find(query_row);
@@ -204,17 +205,19 @@ namespace pc_mat {
                 }
                 size_t addr_idx = it->second;
                 int64_t row_address = address_of_rows[addr_idx].second;
+                std::cout<<"addr_idx: "<< addr_idx <<" query_row: "<< query_row
+                    <<" row_address: "<< row_address << std::endl;
 
-                int number_of_neighbors = 0;
-                if (addr_idx + 1 < address_of_rows.size()) {
-                    number_of_neighbors = (address_of_rows[addr_idx + 1].second - row_address) / 8;
-                } else {
-                    number_of_neighbors = (file_size - row_address) / 8;
-                }
-                if (number_of_neighbors <= 0) {
-                    results[out_idx] = result;
-                    continue;
-                }
+                
+                // if (addr_idx + 1 < address_of_rows.size()) {
+                //     number_of_neighbors = (address_of_rows[addr_idx + 1].second - row_address) / 8;
+                // } else {
+                //     number_of_neighbors = (file_size - row_address) / 8;
+                // }
+                // if (number_of_neighbors <= 0) {
+                //     results[out_idx] = result;
+                //     continue;
+                // }
                 // Read the neighbor data
                 ifstream bin_file(bin_filename, ios::binary);
                 if (!bin_file) {
@@ -224,19 +227,23 @@ namespace pc_mat {
                 }
                 bin_file.seekg(row_address);
 
-                vector<int32_t> neighbor_differences(number_of_neighbors);
-                bin_file.read(reinterpret_cast<char*>(neighbor_differences.data()), number_of_neighbors * sizeof(int32_t));
-                vector<int32_t> neighbor_values(number_of_neighbors);
-                bin_file.read(reinterpret_cast<char*>(neighbor_values.data()), number_of_neighbors * sizeof(int32_t));
+                bits::elias_fano<> ef;
+                ef.load(bin_file);
+                std::cout<<"ef num bytes: "<< ef.num_bytes() << std::endl;
+                bits::compact_vector cv;
+                cv.load(bin_file);
+                std::cout<<"cv num bytes: "<< cv.num_bytes() << std::endl;
 
+                int number_of_neighbors = ef.size();
+                std::cout<<"number_of_neighbors: "<< number_of_neighbors << std::endl;
+                
                 result.neighbor_indices.resize(number_of_neighbors);
                 result.neighbor_values.resize(number_of_neighbors);
                 
                 int current_col = 0;
                 for (int i = 0; i < number_of_neighbors; ++i) {
-                    current_col += neighbor_differences[i];
-                    result.neighbor_indices[i] = current_col;
-                    result.neighbor_values[i] = neighbor_values[i];
+                    result.neighbor_indices[i] = ef.access(i);
+                    result.neighbor_values[i] = static_cast<int32_t>(cv[i]);
                 }
                 results[out_idx] = std::move(result);
 
@@ -504,7 +511,7 @@ namespace pc_mat {
             if (neighbors.neighbor_indices.empty()) {
                 // cout << "  No neighbors found" << endl;
             } else {
-                // cout << "  Found " << neighbors.neighbor_indices.size() << " neighbors:" << endl;
+                cout << "  Found " << neighbors.neighbor_indices.size() << " neighbors:" << endl;
                 // Pair each neighbor index with its value (intersection size)
                 vector<pair<int, int>> neighbor_pairs;
                 for (size_t i = 0; i < neighbors.neighbor_indices.size(); ++i) {
@@ -537,13 +544,13 @@ namespace pc_mat {
                     res.jaccard_similarities.push_back(jaccard);
                     // if (neighbor_idx == 34){
                     // if (jaccard > 0.1 && neighbor_idx < 35000){
-                        // cout << "  " << neighbor_idx << " (" << neighbor_id << ") intersection=" << intersection
-                        //     << " jaccard=" << jaccard  << " size of the datasets= " << norm_a << " " <<norm_b << endl;
+                        cout << "  " << neighbor_idx << " (" << neighbor_id << ") intersection=" << intersection
+                            << " jaccard=" << jaccard  << " size of the datasets= " << norm_a << " " <<norm_b << endl;
                     // }
                 }
                 all_results[q] = std::move(res);
             }
-            cout << endl;
+            // cout << endl;
         }
         return all_results;
     }

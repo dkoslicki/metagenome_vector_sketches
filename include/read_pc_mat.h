@@ -14,12 +14,12 @@
 #include <numeric>
 
 using namespace std;
-namespace fs = std::filesystem;
+
 
 namespace pc_mat{
     struct NeighborData {
         vector<int> neighbor_indices;
-        vector<int> neighbor_values;
+        vector<int> neighbor_values; // Check: Should this be int64_t?
     };
 
     // Function to decompress zstd files if they exist and track them

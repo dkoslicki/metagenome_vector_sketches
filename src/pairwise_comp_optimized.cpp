@@ -299,17 +299,21 @@ void write_sparse_results_prev(const string& folder,
         const vector<int64_t>& vals = pair.second;
 
         // Record the first position for this row
-        index_out << row << " " << current_pos << endl;
+        index_out << row << " " << current_pos <<std::endl;
+        std::cout<<row<<" col size: "<<cols.size()<<" val size: "<<vals.size()<< endl;
 
         // Write column indices as differences (deltas) from previous col
-        int32_t prev_col = 0;
+        // int32_t prev_col = 0;
+        int32_t prev_col = cols[0];
+        bin_out.write(reinterpret_cast<const char*>(&prev_col), sizeof(int32_t));
+        current_pos += sizeof(int32_t);
         for (size_t k = 1; k < cols.size(); ++k) {
             int32_t delta_col = cols[k] - prev_col;
             prev_col = cols[k];
             bin_out.write(reinterpret_cast<const char*>(&delta_col), sizeof(int32_t));
             current_pos += sizeof(int32_t);
         }
-
+        
         // Write values (divided by 2048)
         for (size_t k = 0; k < vals.size(); ++k) {
             int32_t val32 = static_cast<int32_t>(round(static_cast<double>(vals[k]) / dimension));
@@ -345,8 +349,9 @@ void write_sparse_results(const string& folder,
     ofstream bin_out(bin_filename, ios::binary);
 
     // File to store the position of the first byte for each row
-    string index_filename = folder + "row_index.txt";
-    ofstream index_out(index_filename);
+    // string index_filename = folder + "row_index.txt";
+    string index_filename = folder + "row_index.bin";
+    ofstream index_out(index_filename, ios::binary);
 
     // Map from row to first byte position in the binary file
     int64_t current_pos = 0;
@@ -359,27 +364,48 @@ void write_sparse_results(const string& folder,
         return dot_products_vec;
     };
 
+    std::vector<int32_t> row_vec(reorganized_results.size());
+    std::vector<int64_t> curr_pos_vec(reorganized_results.size());
+
     // Write each row's results in the new format, iterating only over rows present in reorganized_results
+    int indx = 0;
     for (const auto& [row, pair] : reorganized_results) {
         //NOTE: Assumes #genomes can be read in int32_t
         const vector<int32_t>& cols = pair.first;
         const vector<int64_t>& vals = pair.second;
 
         // Record the first position for this row
-        essentials::save_pod(index_out, row);
-        essentials::save_pod(index_out, current_pos);
+        // essentials::save_pod(index_out, row);
+        // essentials::save_pod(index_out, current_pos);
+        row_vec[indx] = row;
+        curr_pos_vec[indx++] = current_pos;
+
+        std::cout<<indx<<": Writing row: "<< row <<" at pos: "<< current_pos << std::endl;
         
         bits::elias_fano<> ef;
         ef.encode(cols.begin(), cols.size(), cols.back()+1);
         ef.save(bin_out);
         current_pos += ef.num_bytes();
 
+        std::cout<<"ef bytes: "<< ef.num_bytes() << std::endl;
+        std::cout<<"col size: "<<cols.size()<<" val size: "<<vals.size()<<std::endl;
+
         vector<int64_t> dot_products_vec = get_dot_products_vec(vals);
         bits::compact_vector cv;
         cv.build(dot_products_vec.begin(), dot_products_vec.size());
         cv.save(bin_out);
         current_pos += cv.num_bytes();
+        std::cout<<" cv bytes: "<< cv.num_bytes() << std::endl;
     }
+    bin_out.close();
+    bits::compact_vector cv_rows;
+    cv_rows.build(row_vec.begin(), row_vec.size());
+    cv_rows.save(index_out);
+    bits::compact_vector cv_pos;
+    cv_pos.build(curr_pos_vec.begin(), curr_pos_vec.size());
+    cv_pos.save(index_out);
+    index_out.close();
+    
 
     // Compress the output files using zstd and remove the originals
     string cmd1 = "zstd -f " + bin_filename + " && rm -f " + bin_filename;
