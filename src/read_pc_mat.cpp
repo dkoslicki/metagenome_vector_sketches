@@ -506,15 +506,15 @@ namespace pc_mat {
             } else {
                 // cout << "  Found " << neighbors.neighbor_indices.size() << " neighbors:" << endl;
                 // Pair each neighbor index with its value (intersection size)
-                vector<pair<int, int>> neighbor_pairs;
+                vector<pair<int64_t, int64_t>> neighbor_pairs;
                 for (size_t i = 0; i < neighbors.neighbor_indices.size(); ++i) {
                     neighbor_pairs.emplace_back(neighbors.neighbor_indices[i], neighbors.neighbor_values[i]);
                 }
 
-                // Sort by Jaccard index (intersection / union) in descending order
+                // Sort by Jaccard index (int64_tersection / union) in descending order
                 // Jaccard = intersection / (|A| + |B| - intersection)
                 // |A| = vector_norms[query_row], |B| = vector_norms[neighbor_idx]
-                sort(neighbor_pairs.begin(), neighbor_pairs.end(), [&](const pair<int, int>& a, const pair<int, int>& b) {
+                sort(neighbor_pairs.begin(), neighbor_pairs.end(), [&](const pair<int64_t, int64_t>& a, const pair<int64_t, int64_t>& b) {
                     int idx_a = a.first, idx_b = b.first;
                     float norm_a = vector_norms[query_row]*vector_norms[query_row];
                     float norm_ba = vector_norms[idx_a]*vector_norms[idx_a];
