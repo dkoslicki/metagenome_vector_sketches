@@ -426,8 +426,7 @@ namespace pc_mat {
         return index_to_neighbors;
     }
 
-    vector<Result> query(string matrix_folder, string query_file){
-        vector<string> query_ids_str;
+    vector<Result> query(string matrix_folder, string query_file, std::vector<string> query_ids_str){
         bool read_from_stdin = false;
         bool show_help = false;
 

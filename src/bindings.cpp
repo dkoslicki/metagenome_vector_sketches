@@ -44,7 +44,8 @@ py::list vector_to_pylist(const std::vector<std::string> &vec) {
 
 // Binding function exposed to Python
 py::list query_py(std::string matrix_folder, std::string query_file) {
-    std::vector<pc_mat::Result> results = pc_mat::query(matrix_folder, query_file);
+    std::vector<std::string> query_ids_str; // just a placeholder for now
+    std::vector<pc_mat::Result> results = pc_mat::query(matrix_folder, query_file, query_ids_str);
     py::list all_results;
     for (const auto &res : results) {
         py::dict res_dict;
@@ -57,7 +58,7 @@ py::list query_py(std::string matrix_folder, std::string query_file) {
 }
 
 PYBIND11_MODULE(read_pc_mat_module, m) {
-    m.doc() = "Module for querying AVA matrix";
+    m.doc() = "Module for querying pairwise comparison matrix";
     m.def("query", &query_py, py::arg("matrix_folder"), py::arg("query_file"),
-          "Compute neighbors for queries in the given matrix folder and query file; returns a list of dictionaries with neighbor IDs and Jaccard similarities.");
+          "Compute neighbors for queries in the given matrix folder and query file / ids; returns a list of dictionaries with neighbor IDs and Jaccard similarities.");
 }

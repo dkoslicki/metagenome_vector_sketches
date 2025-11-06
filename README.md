@@ -25,7 +25,7 @@ cmake --build . -j 8
 
 ## Usage
 
-We will use `test` folder for the example. All executables are in the `build` folder, and shows usage when run without arguments.
+We will use `test` folder for the example. **All executables are inside the `build` folder, and show usage when run without arguments.**
 
 Create projected vectors from fracminhash data into the index folder:
 
@@ -52,7 +52,7 @@ Then, to query using `query_pc_mat`:
 ../build/query_ava_matrix --matrix_folder toy_index/ --query_file query_strs.txt
 ``` -->
 ``` shell
-../build/query_pc_mat --matrix_folder toy_index/ --query_file query_strs.txt --top 20
+../build/query_pc_mat --matrix_folder toy_index/ --query_file query_strs.txt --top 20 --write_to_file --show_all
 ```
 
 To use python interface:
